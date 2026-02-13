@@ -3,6 +3,14 @@ import { Audio2FaceCore } from './audio2face-core.mjs';
 const ort = window.ort;
 if (!ort) throw new Error('ONNX Runtime not loaded. Include ort.webgpu.min.js or onnxruntime-web.min.js before this script.');
 
+const hasSharedArrayBuffer = typeof SharedArrayBuffer !== 'undefined';
+if (hasSharedArrayBuffer) {
+  ort.env.wasm.numThreads = navigator.hardwareConcurrency || 4;
+  ort.env.wasm.proxy = true;
+} else {
+  ort.env.wasm.numThreads = 1;
+}
+
 export class Audio2FaceSDK extends Audio2FaceCore {
   constructor(options = {}) {
     super({ ort, ...options });
@@ -11,6 +19,7 @@ export class Audio2FaceSDK extends Audio2FaceCore {
 
   static get BLENDSHAPE_NAMES() { return Audio2FaceCore.BLENDSHAPE_NAMES; }
   static get EMOTIONS() { return Audio2FaceCore.EMOTIONS; }
+  static get THREADING_ENABLED() { return hasSharedArrayBuffer; }
 
   isWebGPUSupported() {
     return typeof navigator !== 'undefined' && navigator.gpu !== undefined;
@@ -30,21 +39,32 @@ export class Audio2FaceSDK extends Audio2FaceCore {
     }
 
     const sessionOpts = { graphOptimizationLevel: 'all' };
+    const backends = this._getBackendOrder(useGPU);
 
-    if (useGPU && this.isWebGPUSupported()) {
+    for (const backend of backends) {
       try {
-        sessionOpts.executionProviders = ['webgpu'];
+        sessionOpts.executionProviders = [backend === 'webgpu'
+          ? { name: 'webgpu', preferredLayout: 'NHWC' }
+          : backend === 'webnn'
+            ? { name: 'webnn', deviceType: 'gpu' }
+            : backend];
         this.session = await ort.InferenceSession.create(modelBuffer, sessionOpts);
-        this.actualBackend = 'webgpu';
+        this.actualBackend = backend;
         return this.session;
       } catch (err) {
-        console.warn('WebGPU failed, falling back to WASM:', err.message);
+        console.warn(`${backend} failed, trying next:`, err.message);
       }
     }
-    sessionOpts.executionProviders = ['wasm'];
-    this.session = await ort.InferenceSession.create(modelBuffer, sessionOpts);
-    this.actualBackend = 'wasm';
-    return this.session;
+    throw new Error('All execution providers failed: ' + backends.join(', '));
+  }
+
+  _getBackendOrder(useGPU) {
+    if (!useGPU) return ['wasm'];
+    const backends = [];
+    if (this.isWebGPUSupported()) backends.push('webgpu');
+    if (typeof navigator !== 'undefined' && 'ml' in navigator) backends.push('webnn');
+    backends.push('wasm');
+    return backends;
   }
 
   async processAudioFile(audioFile) {

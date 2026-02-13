@@ -50,6 +50,10 @@ export class Audio2FaceCore {
     this._ring = new Float32Array(RING_CAPACITY);
     this._ringLen = 0;
     this._chunkLock = null;
+    this._audioKey = null;
+    this._hasEmotion = false;
+    this._audioBuf = null;
+    this._emotionTensor = null;
     if (config) this.loadConfig(config);
   }
 
@@ -92,14 +96,29 @@ export class Audio2FaceCore {
   setEmotions(obj) { for (const [k, v] of Object.entries(obj)) this.setEmotion(k, v); }
   getEmotionVector() { return new Float32Array(this.emotionVector); }
 
+  _initTensorCache() {
+    const names = this.session.inputNames;
+    this._audioKey = names.includes('audio') ? 'audio' : names.includes('input') ? 'input' : names[0];
+    this._hasEmotion = names.includes('emotion');
+    this._audioBuf = new Float32Array(this.bufferLen);
+    if (this._hasEmotion)
+      this._emotionTensor = new this.ort.Tensor('float32', new Float32Array(26), [1, 1, 26]);
+  }
+
   async runInference(audioChunk) {
     if (!this.session) throw new Error('No session loaded. Call loadModel() first.');
+    if (!this._audioKey) this._initTensorCache();
     const feeds = {};
-    const names = this.session.inputNames;
-    const audioKey = names.includes('audio') ? 'audio' : names.includes('input') ? 'input' : names[0];
-    feeds[audioKey] = new this.ort.Tensor('float32', audioChunk, [1, 1, audioChunk.length]);
-    if (names.includes('emotion'))
-      feeds.emotion = new this.ort.Tensor('float32', this.getEmotionVector(), [1, 1, 26]);
+    if (audioChunk.length === this._audioBuf.length) {
+      this._audioBuf.set(audioChunk);
+      feeds[this._audioKey] = new this.ort.Tensor('float32', this._audioBuf, [1, 1, this._audioBuf.length]);
+    } else {
+      feeds[this._audioKey] = new this.ort.Tensor('float32', audioChunk, [1, 1, audioChunk.length]);
+    }
+    if (this._hasEmotion) {
+      this._emotionTensor.data.set(this.emotionVector);
+      feeds.emotion = this._emotionTensor;
+    }
     return this.parseOutputs(await this.session.run(feeds));
   }
 
@@ -206,6 +225,10 @@ export class Audio2FaceCore {
     this._ring = new Float32Array(RING_CAPACITY);
     this._ringLen = 0;
     this.lastResult = null;
+    this._audioKey = null;
+    this._hasEmotion = false;
+    this._audioBuf = null;
+    this._emotionTensor = null;
   }
 }
 

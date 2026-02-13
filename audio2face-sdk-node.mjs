@@ -11,7 +11,7 @@ export class Audio2FaceSDK extends Audio2FaceCore {
   static get EMOTIONS() { return Audio2FaceCore.EMOTIONS; }
 
   async loadModel(modelFile, options = {}) {
-    const { useGPU = false } = options;
+    const { useGPU = false, threads } = options;
     let modelBuffer;
     if (modelFile instanceof ArrayBuffer) {
       modelBuffer = modelFile;
@@ -25,8 +25,18 @@ export class Audio2FaceSDK extends Audio2FaceCore {
       throw new Error('Model must be a file path string, ArrayBuffer, or Buffer');
     }
 
+    const os = await import('os');
+    const numThreads = threads || Math.max(1, Math.floor(os.cpus().length / 2));
     const providers = useGPU ? ['cuda', 'cpu'] : ['cpu'];
-    const sessionOpts = { executionProviders: providers, graphOptimizationLevel: 'all' };
+    const sessionOpts = {
+      executionProviders: providers,
+      graphOptimizationLevel: 'all',
+      enableCpuMemArena: true,
+      enableMemPattern: true,
+      executionMode: 'sequential',
+      intraOpNumThreads: numThreads,
+      interOpNumThreads: 1,
+    };
 
     try {
       this.session = await ort.InferenceSession.create(modelBuffer, sessionOpts);
@@ -38,6 +48,11 @@ export class Audio2FaceSDK extends Audio2FaceCore {
       this.actualBackend = 'cpu';
     }
     return this.session;
+  }
+
+  async loadQuantizedModel(modelPath, options = {}) {
+    console.warn('INT8 quantized model: 4x smaller but may be slower on some CPUs. Use for memory-constrained environments.');
+    return this.loadModel(modelPath, options);
   }
 
   async loadConfigFile(configPath) {
