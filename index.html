@@ -274,7 +274,7 @@
                     await sdk.loadModel(modelBlob, { useGPU });
                     
                     const loadTime = Math.round(performance.now() - startTime);
-                    const backend = sdk.isWebGPUSupported() && useGPU ? 'WebGPU' : 'WASM';
+                    const backend = sdk.actualBackend === 'webgpu' ? 'WebGPU' : 'WASM';
                     
                     progressFill.style.width = '100%';
                     modelStatus.innerHTML = `Model loaded successfully in ${loadTime}ms using ${backend} backend`;

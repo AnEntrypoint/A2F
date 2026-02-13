@@ -17,16 +17,35 @@ export class Audio2FaceSDK {
         this.audioBuffer = new Float32Array(0);
         this.lastResult = null;
         this.smoothingFactor = 0.3;
-        
+        this.actualBackend = null;
+        this.skinOffset = 0;
+        this.skinSize = 140;
+        this.tongueOffset = 140;
+        this.tongueSize = 10;
+        this.jawOffset = 150;
+        this.jawSize = 15;
+        this.eyesOffset = 165;
+        this.eyesSize = 4;
+
         this.blendshapeNames = this.generateBlendshapeNames();
     }
 
     generateBlendshapeNames() {
-        const names = [];
-        for (let i = 0; i < 52; i++) {
-            names.push(`blendshape_${i}`);
-        }
-        return names;
+        return [
+            'browInnerUp', 'browDownLeft', 'browDownRight', 'browOuterUpLeft',
+            'browOuterUpRight', 'eyeLookUpLeft', 'eyeLookUpRight', 'eyeLookDownLeft',
+            'eyeLookDownRight', 'eyeLookInLeft', 'eyeLookInRight', 'eyeLookOutLeft',
+            'eyeLookOutRight', 'eyeBlinkLeft', 'eyeBlinkRight', 'eyeSquintLeft',
+            'eyeSquintRight', 'eyeWideLeft', 'eyeWideRight', 'cheekPuff',
+            'cheekSquintLeft', 'cheekSquintRight', 'noseSneerLeft', 'noseSneerRight',
+            'jawOpen', 'jawForward', 'jawLeft', 'jawRight',
+            'mouthFunnel', 'mouthPucker', 'mouthLeft', 'mouthRight',
+            'mouthRollUpper', 'mouthRollLower', 'mouthShrugUpper', 'mouthShrugLower',
+            'mouthOpen', 'mouthClose', 'mouthSmileLeft', 'mouthSmileRight',
+            'mouthFrownLeft', 'mouthFrownRight', 'mouthDimpleLeft', 'mouthDimpleRight',
+            'mouthUpperUpLeft', 'mouthUpperUpRight', 'mouthLowerDownLeft', 'mouthLowerDownRight',
+            'mouthPressLeft', 'mouthPressRight', 'mouthStretchLeft', 'mouthStretchRight'
+        ];
     }
 
     async loadModel(modelFile, options = {}) {
@@ -53,10 +72,12 @@ export class Audio2FaceSDK {
 
         try {
             this.session = await ort.InferenceSession.create(modelBuffer, sessionOptions);
+            this.actualBackend = sessionOptions.executionProviders[0];
         } catch (err) {
             console.warn('GPU initialization failed, falling back to CPU:', err);
             sessionOptions.executionProviders = ['wasm'];
             this.session = await ort.InferenceSession.create(modelBuffer, sessionOptions);
+            this.actualBackend = 'wasm';
         }
 
         return this.session;
@@ -151,51 +172,38 @@ export class Audio2FaceSDK {
         return this.parseOutputs(results);
     }
 
+    sigmoid(x) {
+        return 1 / (1 + Math.exp(-x));
+    }
+
     parseOutputs(outputs) {
-        const result = {
-            blendshapes: [],
-            jaw: 0,
-            eyes: null,
-            timestamp: performance.now()
+        const data = outputs[this.session.outputNames[0]].data;
+
+        const blendshapes = [];
+        const numBs = Math.min(this.blendshapeNames.length, this.skinSize);
+        for (let i = 0; i < numBs; i++) {
+            const raw = data[this.skinOffset + i];
+            blendshapes.push({
+                name: this.blendshapeNames[i],
+                value: Math.max(0, Math.min(1, this.sigmoid(raw * 0.1)))
+            });
+        }
+
+        const jawValues = [];
+        for (let i = 0; i < this.jawSize; i++) {
+            jawValues.push(data[this.jawOffset + i] || 0);
+        }
+        const jaw = Math.max(0, Math.min(1, this.sigmoid(jawValues[0] * 0.1)));
+
+        const eo = this.eyesOffset;
+        const eyes = {
+            leftX: data[eo] || 0,
+            leftY: data[eo + 1] || 0,
+            rightX: data[eo + 2] || 0,
+            rightY: data[eo + 3] || 0
         };
 
-        const outputNames = this.session.outputNames;
-        
-        for (const name of outputNames) {
-            const tensor = outputs[name];
-            const data = tensor.data;
-            
-            if (name.includes('blendshape') || name.includes('shape')) {
-                for (let i = 0; i < data.length && i < 52; i++) {
-                    result.blendshapes.push({
-                        name: this.blendshapeNames[i],
-                        value: Math.max(0, Math.min(1, data[i]))
-                    });
-                }
-            } else if (name.includes('jaw')) {
-                result.jaw = data[0] || 0;
-            } else if (name.includes('eye')) {
-                result.eyes = {
-                    leftX: data[0] || 0,
-                    leftY: data[1] || 0,
-                    rightX: data[2] || 0,
-                    rightY: data[3] || 0
-                };
-            }
-        }
-
-        if (result.blendshapes.length === 0 && outputNames.length > 0) {
-            const firstOutput = outputs[outputNames[0]];
-            const data = firstOutput.data;
-            for (let i = 0; i < Math.min(data.length, 52); i++) {
-                result.blendshapes.push({
-                    name: this.blendshapeNames[i],
-                    value: Math.max(0, Math.min(1, data[i] || 0))
-                });
-            }
-        }
-
-        return result;
+        return { blendshapes, jaw, eyes, timestamp: performance.now() };
     }
 
     smoothBlendshapes(prev, curr) {
